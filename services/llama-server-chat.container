@@ -1,0 +1,60 @@
+[Unit]
+Description=llama-server (chat) - Qwen3.6-35B-A3B UD-Q6_K, 4 slots for Hermes
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Container]
+ContainerName=llama-chat
+Image=localhost/llama-rocm-7.2.4:latest
+
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+Network=host
+
+Volume=/srv/llm/models:/models:ro,z
+Volume=/srv/llm/templates:/templates:ro,z
+
+Environment=HIP_VISIBLE_DEVICES=0
+
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--ipc=host
+
+# Unit is not "active" until /health answers, which is what makes the
+# After= chaining in the other two units actually serialize GTT allocation.
+# Requires curl inside the image - verify before first boot.
+Notify=healthy
+HealthCmd=curl -sf http://127.0.0.1:8081/health || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=90
+HealthStartPeriod=30s
+
+# Single quotes around the JSON are load-bearing. systemd strips bare
+# double quotes, which would hand llama-server invalid JSON.
+Exec=llama-server \
+      --alias chat \
+      -m /models/Qwen3.6-35B-A3B-UD-Q6_K.gguf \
+      --host 0.0.0.0 --port 8081 \
+      -c 131072 -np 4 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 2048 -ub 512 \
+      --cache-ram 8192 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs '{"preserve_thinking":true}' \
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
+
+[Service]
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=1200
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

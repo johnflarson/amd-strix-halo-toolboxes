@@ -1,0 +1,47 @@
+[Unit]
+Description=llama-server (chat) - Qwen3.6-35B-A3B UD-Q6_K, 4 slots for Hermes
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=900
+StartLimitBurst=3
+
+[Service]
+Type=exec
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=900
+TimeoutStopSec=90
+
+ExecStart=/usr/bin/podman run --rm --replace --name llama-chat \
+    --device /dev/kfd --device /dev/dri \
+    --group-add keep-groups \
+    --security-opt seccomp=unconfined \
+    --ipc=host --network=host \
+    -v /srv/llm/models:/models:ro,z \
+    -v /srv/llm/templates:/templates:ro,z \
+    -e HIP_VISIBLE_DEVICES=0 \
+    docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.4 \
+    llama-server \
+      --alias chat \
+      -m /models/Qwen3.6-35B-A3B-UD-Q6_K.gguf \
+      --host 0.0.0.0 --port 8081 \
+      -c 131072 -np 4 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 2048 -ub 512 \
+      --cache-ram 8192 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs {"preserve_thinking":true} \
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
+
+# Unit is not "active" until /health answers. This is what makes the
+# After= chaining in the other two units actually serialize GTT allocation.
+ExecStartPost=/usr/bin/timeout 870 sh -c 'until curl -sf http://127.0.0.1:8081/health >/dev/null 2>&1; do sleep 3; done'
+
+ExecStop=/usr/bin/podman stop -t 60 llama-chat
+
+[Install]
+WantedBy=default.target

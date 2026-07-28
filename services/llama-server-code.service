@@ -1,0 +1,50 @@
+[Unit]
+Description=llama-server (code) - Qwen3.6-27B MTP UD-Q4_K_XL, single slot
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target llama-server-chat.service
+Wants=network-online.target llama-server-chat.service
+StartLimitIntervalSec=900
+StartLimitBurst=3
+
+[Service]
+Type=exec
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=900
+TimeoutStopSec=90
+
+# MTP requires a llama.cpp build carrying PR #22673. Verify with:
+#   podman run --rm docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.3 \
+#     llama-server --help | grep -i spec-type
+# If absent, drop the two --spec-* lines and move to UD-Q5_K_XL instead.
+ExecStart=/usr/bin/podman run --rm --replace --name llama-code \
+    --device /dev/kfd --device /dev/dri \
+    --group-add keep-groups \
+    --security-opt seccomp=unconfined \
+    --ipc=host --network=host \
+    -v /srv/llm/models:/models:ro,z \
+    -v /srv/llm/templates:/templates:ro,z \
+    -e HIP_VISIBLE_DEVICES=0 \
+    docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.4 \
+    llama-server \
+      --alias code \
+      -m /models/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf \
+      --host 0.0.0.0 --port 8082 \
+      -c 163840 -np 1 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 4096 -ub 2048 \
+      --cache-ram 12288 \
+      --spec-type draft-mtp --spec-draft-n-max 2 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs {"enable_thinking":false} \
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0
+
+ExecStartPost=/usr/bin/timeout 870 sh -c 'until curl -sf http://127.0.0.1:8082/health >/dev/null 2>&1; do sleep 3; done'
+
+ExecStop=/usr/bin/podman stop -t 60 llama-code
+
+[Install]
+WantedBy=default.target
