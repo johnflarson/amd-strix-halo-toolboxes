@@ -1,5 +1,5 @@
 [Unit]
-Description=llama-server (tools) - Qwable-27B-Chadrock ROCmFPX Ultra, 4 slots
+Description=llama-server (tools) - Qwen3.5-9B Q8_0, 6 slots for tool dispatch
 Documentation=https://github.com/ggml-org/llama.cpp
 After=network-online.target llama-server-code.service
 Wants=network-online.target llama-server-code.service
@@ -8,7 +8,7 @@ StartLimitBurst=3
 
 [Container]
 ContainerName=llama-tools
-Image=localhost/llama-rocm-7.2.4-rocmfpx1:latest
+Image=localhost/llama-rocm-7.2.4:latest
 
 AddDevice=/dev/kfd
 AddDevice=/dev/dri
@@ -18,9 +18,6 @@ Network=host
 Volume=/srv/llm/models:/models:ro,z
 Volume=/srv/llm/templates:/templates:ro,z
 
-# ROCm0 backend (ciru-ai/ROCmFPX fork uses HIP, not Vulkan)
-Environment=HSA_OVERRIDE_GFX_VERSION=11.5.1
-Environment=GGML_HIP_ENABLE_UNIFIED_MEMORY=1
 Environment=HIP_VISIBLE_DEVICES=0
 
 PodmanArgs=--security-opt seccomp=unconfined
@@ -33,23 +30,20 @@ HealthTimeout=5s
 HealthRetries=60
 HealthStartPeriod=30s
 
-# --spec-draft-n-max 6: model card reports 99.5% acceptance rate at this depth.
-# --spec-draft-type-k/v f16: ROCmFPX-specific flags for MTP draft KV precision.
-# 4 slots: tool calls are short, concurrency matters more than per-call depth.
+# 9B vanilla Qwen3.5 — no MTP heads, no --spec-type flags.
+# 6 slots: 9B at Q8_0 costs ~21 GB total (weights + KV), so concurrency is cheap.
+# 32K context: tool calls are short; this is a ceiling, not a target.
+# --presence-penalty discourages the model from repeating tool calls already made.
 # Single quotes around JSON are load-bearing: systemd strips bare double quotes.
 Exec=llama-server \
       --alias tools \
-      -m /models/Qwable-27B-Chadrock-ROCmFPX-ULTRAQUALITY-7.61BPW.gguf \
+      -m /models/Qwen3.5-9B-Q8_0.gguf \
       --host 0.0.0.0 --port 8083 \
-      -c 65536 -np 4 \
+      -c 32768 -np 6 \
       --no-context-shift \
       -ngl 99 -fa on \
-      -dev ROCm0 \
       -ctk q8_0 -ctv q8_0 \
       -b 2048 -ub 512 \
-      --spec-type draft-mtp --spec-draft-n-max 6 \
-      --spec-draft-type-k f16 \
-      --spec-draft-type-v f16 \
       --jinja \
       --chat-template-file /templates/qwen-froggeric-v21.jinja \
       --chat-template-kwargs '{"enable_thinking":false}' \

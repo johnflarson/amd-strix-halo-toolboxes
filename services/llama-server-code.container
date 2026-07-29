@@ -1,5 +1,5 @@
 [Unit]
-Description=llama-server (code) - Qwen3.6-27B MTP UD-Q4_K_XL, single slot
+Description=llama-server (code) - Qwopus3.6-27B-Coder ROCmFP4, single slot
 Documentation=https://github.com/ggml-org/llama.cpp
 After=network-online.target llama-server-chat.service
 Wants=network-online.target llama-server-chat.service
@@ -18,7 +18,9 @@ Network=host
 Volume=/srv/llm/models:/models:ro,z
 Volume=/srv/llm/templates:/templates:ro,z
 
-Environment=HIP_VISIBLE_DEVICES=0
+# Vulkan0 backend — same image as chat (charlie12345/ROCmFPX)
+Environment=HSA_OVERRIDE_GFX_VERSION=11.5.1
+Environment=GGML_HIP_ENABLE_UNIFIED_MEMORY=1
 
 PodmanArgs=--security-opt seccomp=unconfined
 PodmanArgs=--ipc=host
@@ -30,21 +32,22 @@ HealthTimeout=5s
 HealthRetries=90
 HealthStartPeriod=30s
 
-# MTP requires a llama.cpp build carrying PR #22673. Verify with:
+# MTP requires a build carrying the MTP spec tensors. Verify with:
 #   podman run --rm localhost/llama-rocm-7.2.4-rocmfpx:latest \
 #     llama-server --help | grep -i spec-type
-# If absent, drop the two --spec-* args and move to UD-Q5_K_XL instead.
+# If absent, drop the two --spec-* args.
+# f16 KV required for ROCmFP4 — see chat unit for rationale.
 Exec=llama-server \
       --alias code \
-      -m /models/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf \
+      -m /models/Qwopus3.6-27B-Coder-MTP-ROCmFP4-STRIX-embF16-headQ6.gguf \
       --host 0.0.0.0 --port 8082 \
-      -c 163840 -np 1 \
+      -c 131072 -np 1 \
       --no-context-shift \
       -ngl 99 -fa on \
-      -ctk q8_0 -ctv q8_0 \
-      -b 4096 -ub 2048 \
-      --cache-ram 12288 \
-      --spec-type draft-mtp --spec-draft-n-max 2 \
+      -dev Vulkan0 \
+      -ctk f16 -ctv f16 \
+      -b 2048 -ub 2048 \
+      --spec-type draft-mtp --spec-draft-n-max 5 \
       --jinja \
       --chat-template-file /templates/qwen-froggeric-v21.jinja \
       --chat-template-kwargs '{"enable_thinking":false}' \
