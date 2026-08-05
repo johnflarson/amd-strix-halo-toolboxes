@@ -1,0 +1,83 @@
+[Unit]
+Description=llama-server (chadrock) - Chadrock-35B-Ace-Saber ROCmFP4 MTP
+Documentation=https://huggingface.co/jcbtc/chadrock-35b-ace-saber-rocmfp4-mtp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Container]
+ContainerName=llama-chadrock
+# Requires ciru-ai/ROCmFPX fork — built from Dockerfile.rocm-7.2.4-rocmfpx1.
+# Model card pins commit 647fd52965a401d7fa8e035fc76a16c94216a794. Verify the
+# image was built after that commit landed on main, or rebuild with:
+#   cd toolboxes && git clone --branch main ciru-ai/ROCmFPX
+# then pinning BRANCH=647fd52965a in the ARG line of the Dockerfile.
+Image=localhost/llama-rocm-7.2.4-rocmfpx1:latest
+
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+Network=host
+
+Volume=/srv/llm/models:/models:ro,z
+Volume=/srv/llm/templates:/templates:ro,z
+
+# Vulkan0 even on the ciru-ai fork — this model targets the Vulkan FP4 path.
+Environment=HSA_OVERRIDE_GFX_VERSION=11.5.1
+Environment=GGML_HIP_ENABLE_UNIFIED_MEMORY=1
+
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--ipc=host
+
+Notify=healthy
+HealthCmd=curl -sf http://127.0.0.1:8084/health || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=90
+HealthStartPeriod=60s
+
+# Model options:
+#   STRIX_LEAN (19 GB) — F16-to-ROCmFP4, speed-tuned for Strix Halo (used here)
+#   MoEQuality-7.07BPW (~26 GB) — higher quality, swap -m arg to use it
+#
+# Vision: add --mmproj /models/mmproj-CHADROCK-35B-Ace-Saber-F32.mmproj
+#         Remove --no-mmproj if enabling vision.
+#
+# Quality lane: set -c 262144 and --spec-draft-n-max 2 instead of 4.
+#
+# --spec-draft-p-min 0.25 --spec-draft-p-split 0.10: model-card-tuned thresholds
+# that gate whether the MTP draft is accepted; do not change without benchmarking.
+# Single quotes around JSON are load-bearing: systemd strips bare double quotes.
+Exec=llama-server \
+      --alias chadrock \
+      -m /models/Qwen3.6-35B-A3B-NSC-ACE-SABER-MTP-F16-to-ROCmFP4-STRIX_LEAN.gguf \
+      --mmproj /models/mmproj-CHADROCK-35B-Ace-Saber-F32.mmproj \
+      --host 0.0.0.0 --port 8084 \
+      -c 65536 -np 1 \
+      -ngl 99 -fa on \
+      -dev Vulkan0 \
+      -ctk f16 -ctv f16 \
+      -b 2048 -ub 512 \
+      --spec-type draft-mtp \
+      --spec-draft-device Vulkan0 \
+      --spec-draft-type-k f16 \
+      --spec-draft-type-v f16 \
+      --spec-draft-n-max 4 \
+      --spec-draft-n-min 0 \
+      --spec-draft-p-min 0.25 \
+      --spec-draft-p-split 0.10 \
+      --seed 123 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs '{"enable_thinking":true}' \
+      --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0
+
+[Service]
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=1200
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target
