@@ -1,0 +1,69 @@
+[Unit]
+Description=llama-server (tools) - Qwen3.5-9B DAU NEO-MTP-Q8_0, 4 slots 64K
+Documentation=https://huggingface.co/DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF
+After=network-online.target llama-server-code.service
+Wants=network-online.target llama-server-code.service
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Container]
+ContainerName=llama-tools
+Image=localhost/llama-rocm-7.2.4:latest
+
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+Network=host
+
+Volume=/srv/llm/models:/models:ro,z
+Volume=/srv/llm/templates:/templates:ro,z
+
+Environment=HIP_VISIBLE_DEVICES=0
+
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--ipc=host
+
+Notify=healthy
+HealthCmd=curl -sf http://127.0.0.1:8083/health || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=60
+HealthStartPeriod=30s
+
+# Q8_0 chosen over Q6_K for tool calling: highest possible schema compliance
+# at 10.7 GB. Total KV at 4 slots x 64K q8_0 is ~13 GB — lightweight enough
+# that the full stack sits comfortably under 100 GB.
+#
+# File alternative: MTP-Q6_K.gguf (8.76 GB) if you need to trim ~2 GB.
+#
+# MTP on 9B with 4 slots: each slot runs its own draft independently.
+# Spec-draft-n-max 2 is conservative; the 9B model is small enough that
+# raising to 3 is low risk if acceptance rates look good in the journal.
+#
+# MTP constraint: rep_pen must stay at 1.0. presence_penalty is independent
+# and safe to use for tool call deduplication.
+# Single quotes around JSON are load-bearing: systemd strips bare double quotes.
+Exec=llama-server \
+      --alias tools \
+      -m /models/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-MTP-Q8_0.gguf \
+      --host 0.0.0.0 --port 8083 \
+      -c 65536 -np 4 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 2048 -ub 512 \
+      --spec-type draft-mtp \
+      --spec-draft-n-max 2 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs '{"enable_thinking":false}' \
+      --temp 0.7 --top-p 0.80 --top-k 20 --min-p 0.0 --presence-penalty 1.5
+
+[Service]
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=900
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

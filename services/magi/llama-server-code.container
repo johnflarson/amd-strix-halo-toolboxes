@@ -1,0 +1,69 @@
+[Unit]
+Description=llama-server (code) - Qwen3.6-27B DAU NEO-AMD-MTP-Q6_K, single slot
+Documentation=https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF
+After=network-online.target llama-server-chat.service
+Wants=network-online.target llama-server-chat.service
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Container]
+ContainerName=llama-code
+Image=localhost/llama-rocm-7.2.4:latest
+
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+Network=host
+
+Volume=/srv/llm/models:/models:ro,z
+Volume=/srv/llm/templates:/templates:ro,z
+
+Environment=HIP_VISIBLE_DEVICES=0
+
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--ipc=host
+
+Notify=healthy
+HealthCmd=curl -sf http://127.0.0.1:8082/health || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=90
+HealthStartPeriod=30s
+
+# AMD variant: output tensor in f16 instead of bf16 — required on AMD to
+# prevent the bf16 output from forcing CPU offload and tanking throughput.
+#
+# Single slot: MTP acceptance rates collapse with multiple parallel slots on a
+# dense 27B. Keep -np 1 as specified.
+#
+# MTP constraint: rep_pen must be 1.0 exactly. Raising it kills draft acceptance.
+# Monitor with: journalctl --user -u llama-server-code | grep -i accept
+# If acceptance rate falls below 50%, drop the --spec-* args entirely.
+#
+# Thinking off: coding tasks don't need reasoning traces; keeping it off
+# maximises MTP token throughput on code generation.
+# Single quotes around JSON are load-bearing: systemd strips bare double quotes.
+Exec=llama-server \
+      --alias code \
+      -m /models/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-AMD-MTP-Q6_K.gguf \
+      --host 0.0.0.0 --port 8082 \
+      -c 65536 -np 1 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 2048 -ub 2048 \
+      --spec-type draft-mtp \
+      --spec-draft-n-max 2 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs '{"enable_thinking":false}' \
+      --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0
+
+[Service]
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=1200
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

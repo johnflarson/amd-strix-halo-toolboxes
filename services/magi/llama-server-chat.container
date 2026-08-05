@@ -1,0 +1,70 @@
+[Unit]
+Description=llama-server (chat) - Genesis-Hermes-V6 35B-A3B APEX, 4 slots 256K
+Documentation=https://huggingface.co/LuffyTheFox/Qwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V6-GGUF
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Container]
+ContainerName=llama-chat
+Image=localhost/llama-rocm-7.2.4:latest
+
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+Network=host
+
+Volume=/srv/llm/models:/models:ro,z
+Volume=/srv/llm/templates:/templates:ro,z
+
+Environment=HIP_VISIBLE_DEVICES=0
+
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--ipc=host
+
+Notify=healthy
+HealthCmd=curl -sf http://127.0.0.1:8081/health || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=90
+HealthStartPeriod=60s
+
+# MoE 35B-A3B: ~3B active params per token. 4 parallel slots at 256K is viable
+# because the KV budget scales with the compact GQA (4 heads) not full attention.
+# Estimated KV at startup: ~15 GB (q8_0, 4 slots x 256K).
+#
+# File options (all V6, in order of quality vs size):
+#   V6-APEX.gguf          25.7 GB  — imatrix quality quant (used here)
+#   V6-APEX-Compact.gguf  17.4 GB  — smaller footprint, swap if memory is tight
+#   V6-Q8_0.gguf          36.9 GB  — full 8-bit, only if the other two are running
+#                                    at smaller sizes
+#
+# MTP: APEX variants may not have MTP tensors pre-merged. QWEN_MTP.py is
+# provided in the repo to add them. Until merged, omit --spec-type flags.
+#
+# Chat template: froggeric Qwen3.6 template confirmed by model README.
+# Sampler settings are per the model card for Hermes/agentic use.
+# Single quotes around JSON are load-bearing: systemd strips bare double quotes.
+Exec=llama-server \
+      --alias chat \
+      -m /models/Hermes3.6-35B-A3B-Uncensored-Genesis-V6-APEX.gguf \
+      --host 0.0.0.0 --port 8081 \
+      -c 262144 -np 4 \
+      --no-context-shift \
+      -ngl 99 -fa on \
+      -ctk q8_0 -ctv q8_0 \
+      -b 2048 -ub 512 \
+      --jinja \
+      --chat-template-file /templates/qwen-froggeric-v21.jinja \
+      --chat-template-kwargs '{"preserve_thinking":true}' \
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.05
+
+[Service]
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=1800
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target
